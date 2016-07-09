@@ -21,7 +21,7 @@ from smali.objects.string import String
 from smali.objects.string_builder import StringBuilder
 
 # This class holds the mapping of Java objects and methods to their Python respective.
-class ObjectMapping:
+class ObjectMapping(object):
     def __init__(self):
         self.mapping = {
             String.name(): String.methods(),
@@ -70,7 +70,9 @@ class ObjectMapping:
         class_name = self.__demangle_class_name( vm, klass )
         if class_name in self.mapping:
             if method_name in self.mapping[class_name]:
-                self.mapping[class_name][method_name]( vm, this, args )
+                invokeResult = self.mapping[class_name][method_name]( vm, this, args )
+                if not invokeResult is None:
+                    vm.return_v = invokeResult
 
             else:
                 vm.emu.fatal("Unsupported method '%s' for class '%s'." % ( method_name, class_name ))

@@ -20,7 +20,7 @@
 from smali.object_mapping import ObjectMapping
 
 # The virtual machine used by the emulator.
-class VM:
+class VM(object):
     def __init__(self, emulator):
         # we need the emulator instance in order to call its 'fatal' method.
         self.emu = emulator
@@ -32,6 +32,10 @@ class VM:
         self.variables = {}
         # try/catch blocks container with opcodes offsets
         self.catch_blocks = []
+        # packed switches containers
+        self.packed_switches = {}
+        # array data blocks
+        self.array_data = {}
         # list of thrown exceptions
         self.exceptions = []
         # holds the result of the last method invocation
@@ -48,6 +52,9 @@ class VM:
 
     def __setitem__(self, name, value):
         self.variables[name] = value
+
+    def fatal(self, message):
+        self.emu.fatal(message)
 
     def goto(self, label):
         self.pc = self.labels[label]

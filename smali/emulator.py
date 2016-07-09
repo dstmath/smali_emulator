@@ -20,12 +20,13 @@
 from smali.opcodes import *
 from smali.vm import VM
 from smali.source import Source
+from smali.preprocessors import *
 
 import sys
 import time
 
 # Holds some statistics.
-class Stats:
+class Stats(object):
     def __init__(self, vm):
         self.opcodes = len(vm.opcodes)
         self.preproc = 0
@@ -40,7 +41,7 @@ class Stats:
         return s
 
 # The main emulator class.
-class Emulator:
+class Emulator(object):
     def __init__(self):
         # Instance of the virtual machine.
         self.vm      = None
@@ -48,6 +49,12 @@ class Emulator:
         self.source  = None
         # Instance of the statistics object.
         self.stats   = None
+        # Code preprocessors.
+        self.preprocessors = [
+            TryCatchPreprocessor,
+            PackedSwitchPreprocessor,
+            ArrayDataPreprocessor
+        ]
         # Opcodes handlers.
         self.opcodes = []
 
@@ -57,54 +64,34 @@ class Emulator:
             if entry.startswith('op_'):
                 self.opcodes.append( globals()[entry]() )
 
-    @staticmethod
-    def __catch_expression(block_id):
-        """
-        Helper method to create a regular expression to parse a '.catch' directives for a given block.
-        :param block_id: The block number found in the :try_start_BLOCK_ID label.
-        :return: A regular expression.
-        """
-        return '^\.catch [^\s]+ \{:try_start_%s[ \.]+:try_end_%s\}\s*(\:.+)' % (block_id,block_id )
-
-    def __preprocess_trycatch_block(self, index, line):
-        """
-        Will search the '.catch' directive and update the VM accordingly.
-        :param index: The index of the line to start the research from.
-        :param line: The line where the :try_start_BLOCK_ID label was found.
-        """
-        # get block identifier
-        block_id = line.split('_')[2]
-        # search for next pattern:
-        #
-        #   .catch Ljava/lang/Exception; {:try_start_BLOCK_ID .. :try_end_BLOCK_ID} :LABEL
-        #
-        for nindex, nline in enumerate(self.source.lines[index + 1:]):
-            # TODO: Save exception type for specific catch.
-            m = re.search( self.__catch_expression(block_id), nline )
-            if m:
-                label = m.group(1)
-                eindex = nindex + index + 1
-                self.vm.catch_blocks.append((index, eindex, label))
-                break
-
     def __preprocess(self):
         """
         Start the preprocessing phase which will save all the labels and their line index
         for fast lookups while jumping and will pre parse all the try/catch directives.
         """
+        next_line = None
         self.source.lines = map( str.strip, self.source.lines )
         for index, line in enumerate(self.source.lines):
-            # label marker?
-            if line != '' and line[0] == ':':
-                # check for try/catch blocks
-                if line.startswith( ':try_start_' ):
-                    self.__preprocess_trycatch_block(index,line)
+            # we're inside a block which was already processed
+            if next_line is not None and index <= next_line:
+                next_line = None if index == next_line else next_line
+                continue
 
-                # we already considered this ... hopefully :P
-                elif line.startswith( ':try_end_' ):
-                    pass
+            # skip empty lines
+            elif line == '':
+                continue
 
-                else:
+            # we've found something to preprocess
+            elif line[0] == ':':
+                # loop each preprocessors and search for the one responsible to parse this line
+                processed = False
+                for preproc in self.preprocessors:
+                    if preproc.check(line):
+                        next_line = preproc.process( self.vm, line, index, self.source.lines )
+                        processed = True
+
+                # no preprocessor found, this is a normal label
+                if processed  is False:
                     self.vm.labels[line] = index
 
     def __parse_line(self, line):
@@ -136,20 +123,31 @@ class Emulator:
         print "  %03d %s" % (self.vm.pc, self.source[self.vm.pc - 1])
 
         print "\n%s" % message
-        quit()
+        sys.exit()
 
-    def run(self, filename, args = {}):
+    def run_file(self, filename, args = {}, trace=False):
+        fd = open(filename, 'r')
+        return self.run(fd, args, trace)
+
+
+    def run(self, fd, args = {}, trace=False, vm=None):
         """
         Load a smali file and start emulating it.
         :param filename: The path of the file to load and emulate.
         :param args: A dictionary of optional initialization variables for the VM, mostly used for arguments.
+        :param trace: If true every opcode being executed will be printed.
         :return: The return value of the emulated method or None if no return-* opcode was executed.
         """
-        self.source = Source(filename)
-        self.vm     = VM(self)
+        OpCode.trace = trace
+        self.source = Source(fd)
+        if vm is None:
+            self.vm     = VM(self)
+        else:
+            self.vm = vm
         self.stats  = Stats(self)
 
-        self.vm.variables.update(args)
+        if len(args) > 0:
+            self.vm.variables.update(args)
 
         s = time.time() * 1000
         # Preprocess labels and try/catch blocks for fast lookup.
@@ -159,7 +157,7 @@ class Emulator:
 
         s = time.time() * 1000
         # Loop each line and emulate.
-        while self.vm.stop is False:
+        while self.vm.stop is False and self.source.has_line(self.vm.pc):
             self.stats.steps += 1
             line = self.source[self.vm.pc]
             self.vm.pc += 1
